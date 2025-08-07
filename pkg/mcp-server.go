@@ -13,9 +13,11 @@ func NewMCPServer() *server.MCPServer {
 	s := server.NewMCPServer(
 		"Typed Tools Demo 🚀",
 		"1.0.0",
-		server.WithToolCapabilities(false),
+		server.WithToolCapabilities(true),
 	)
 	// Add tool handler using the typed handler
-	s.AddTools(NewGreetingTool())
+	s.AddTools(
+		NewGreetingTool(),
+	)
 	return s
 }
