@@ -11,7 +11,8 @@ ensure:
 
 format:
 	find . -type f -name '*.go' -not -path './vendor/*' -exec gofmt -w "{}" +
-	find . -type f -name '*.go' -not -path './vendor/*' -exec go run -mod=mod github.com/incu6us/goimports-reviser -project-name github.com/bborbe/run -file-path "{}" \;
+	go run -mod=mod github.com/incu6us/goimports-reviser/v3 -project-name github.com/bborbe/sample_mcp_server -format -excludes vendor ./...
+	find . -type f -name '*.go' -not -path './vendor/*' -exec go run -mod=mod github.com/segmentio/golines --max-len=100 -w "{}" +
 
 generate:
 	rm -rf mocks avro

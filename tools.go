@@ -13,6 +13,7 @@ import (
 	_ "github.com/incu6us/goimports-reviser/v3"
 	_ "github.com/kisielk/errcheck"
 	_ "github.com/maxbrunsfeld/counterfeiter/v6"
+	_ "github.com/segmentio/golines"
 	_ "golang.org/x/lint/golint"
 	_ "golang.org/x/vuln/cmd/govulncheck"
 )
