@@ -5,12 +5,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
 	"os"
 
 	libhttp "github.com/bborbe/http"
 	libsentry "github.com/bborbe/sentry"
 	"github.com/bborbe/service"
+	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -34,6 +38,16 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 	router.Path("/healthz").Handler(libhttp.NewPrintHandler("OK"))
 	router.Path("/readiness").Handler(libhttp.NewPrintHandler("OK"))
 	router.Path("/metrics").Handler(promhttp.Handler())
+
+	router.Use(func(handler http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(c))
+			glog.Infof("%s %s %s", r.Method, r.URL, string(c))
+			handler.ServeHTTP(w, r)
+		})
+	})
+
 	router.PathPrefix("/mcp").Handler(server.NewSSEServer(
 		pkg.NewMCPServer(),
 		server.WithStaticBasePath("/mcp"),

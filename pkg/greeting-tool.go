@@ -9,23 +9,23 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
-// Define a struct for our typed arguments
-type GreetingArgs struct {
-	Name      string   `json:"name"`
-	Age       int      `json:"age"`
-	IsVIP     bool     `json:"is_vip"`
-	Languages []string `json:"languages"`
-	Metadata  struct {
-		Location string `json:"location"`
-		Timezone string `json:"timezone"`
-	} `json:"metadata"`
-}
+func NewGreetingTool() server.ServerTool {
 
-func NewGreetingTool() mcp.Tool {
-	// Add tool with complex schema
-	return mcp.NewTool("greeting",
+	type GreetingArgs struct {
+		Name      string   `json:"name"`
+		Age       int      `json:"age"`
+		IsVIP     bool     `json:"is_vip"`
+		Languages []string `json:"languages"`
+		Metadata  struct {
+			Location string `json:"location"`
+			Timezone string `json:"timezone"`
+		} `json:"metadata"`
+	}
+
+	tool := mcp.NewTool("greeting",
 		mcp.WithDescription("Generate a personalized greeting"),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -58,44 +58,46 @@ func NewGreetingTool() mcp.Tool {
 			}),
 		),
 	)
-}
-
-func NewGreetingToolHandler() func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return mcp.NewTypedToolHandler(typedGreetingHandler)
-}
-
-// Our typed handler function that receives strongly-typed arguments
-func typedGreetingHandler(
-	ctx context.Context,
-	request mcp.CallToolRequest,
-	args GreetingArgs,
-) (*mcp.CallToolResult, error) {
-	if args.Name == "" {
-		return mcp.NewToolResultError("name is required"), nil
-	}
-
-	// Build a personalized greeting based on the complex arguments
-	greeting := fmt.Sprintf("Hello, %s!", args.Name)
-
-	if args.Age > 0 {
-		greeting += fmt.Sprintf(" You are %d years old.", args.Age)
-	}
-
-	if args.IsVIP {
-		greeting += " Welcome back, valued VIP customer!"
-	}
-
-	if len(args.Languages) > 0 {
-		greeting += fmt.Sprintf(" You speak %d languages: %v.", len(args.Languages), args.Languages)
-	}
-
-	if args.Metadata.Location != "" {
-		greeting += fmt.Sprintf(" I see you're from %s.", args.Metadata.Location)
-
-		if args.Metadata.Timezone != "" {
-			greeting += fmt.Sprintf(" Your timezone is %s.", args.Metadata.Timezone)
+	handler := mcp.NewTypedToolHandler(func(
+		ctx context.Context,
+		request mcp.CallToolRequest,
+		args GreetingArgs,
+	) (*mcp.CallToolResult, error) {
+		if args.Name == "" {
+			return mcp.NewToolResultError("name is required"), nil
 		}
-	}
 
-	return mcp.NewToolResultText(greeting), nil
+		// Build a personalized greeting based on the complex arguments
+		greeting := fmt.Sprintf("Hello, %s!", args.Name)
+
+		if args.Age > 0 {
+			greeting += fmt.Sprintf(" You are %d years old.", args.Age)
+		}
+
+		if args.IsVIP {
+			greeting += " Welcome back, valued VIP customer!"
+		}
+
+		if len(args.Languages) > 0 {
+			greeting += fmt.Sprintf(
+				" You speak %d languages: %v.",
+				len(args.Languages),
+				args.Languages,
+			)
+		}
+
+		if args.Metadata.Location != "" {
+			greeting += fmt.Sprintf(" I see you're from %s.", args.Metadata.Location)
+
+			if args.Metadata.Timezone != "" {
+				greeting += fmt.Sprintf(" Your timezone is %s.", args.Metadata.Timezone)
+			}
+		}
+
+		return mcp.NewToolResultText(greeting), nil
+	})
+	return server.ServerTool{
+		Tool:    tool,
+		Handler: handler,
+	}
 }

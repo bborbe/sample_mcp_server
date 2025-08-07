@@ -4,7 +4,9 @@
 
 package pkg
 
-import "github.com/mark3labs/mcp-go/server"
+import (
+	"github.com/mark3labs/mcp-go/server"
+)
 
 func NewMCPServer() *server.MCPServer {
 	// Create a new MCP server
@@ -14,6 +16,6 @@ func NewMCPServer() *server.MCPServer {
 		server.WithToolCapabilities(false),
 	)
 	// Add tool handler using the typed handler
-	s.AddTool(NewGreetingTool(), NewGreetingToolHandler())
+	s.AddTools(NewGreetingTool())
 	return s
 }
