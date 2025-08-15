@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	libsentry "github.com/bborbe/sentry"
@@ -35,10 +36,17 @@ func main() {
 type application struct {
 	SentryDSN    string `required:"false" arg:"sentry-dsn"      env:"SENTRY_DSN"      usage:"SentryDSN"               display:"length"`
 	SentryProxy  string `required:"false" arg:"sentry-proxy"    env:"SENTRY_PROXY"    usage:"Sentry Proxy"`
-	Listen       string `required:"false" arg:"listen"          env:"LISTEN"          usage:"address to listen to"                     default:":8095"`
+	Listen       string `required:"false" arg:"listen"          env:"LISTEN"          usage:"address to listen to"                     default:":8080"`
 	ClientID     string `required:"true"  arg:"oauth-client-id" env:"OAUTH_CLIENT_ID" usage:"OAuth 2.0 Client ID"`
 	ClientSecret string `required:"true"  arg:"oauth-secret"    env:"OAUTH_SECRET"    usage:"OAuth 2.0 Client Secret" display:"length"`
+	RedirectURI  string `required:"false" arg:"redirect-uri"    env:"REDIRECT_URI"    usage:"Fixed OAuth redirect URI" default:"http://localhost:8080/callback"`
 }
+
+// stateRedirectMap stores the mapping between OAuth state parameter and original redirect URI
+var (
+	stateRedirectMap = make(map[string]string)
+	stateRedirectMu  sync.RWMutex
+)
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
 
@@ -133,6 +141,8 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		Methods("GET")
 
 	router.Handle("/authorize", corsMiddleware("Authorization", "Content-Type")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		glog.V(2).Infof("authorize started %v", r.URL.Query())
+
 		q := r.URL.Query()
 		clientIDParam := q.Get("client_id")
 		if clientIDParam == "" {
@@ -152,13 +162,23 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 			}
 			return
 		}
-		// optional: scopes, redirect_uri
+		// Get the client-provided redirect URI, fall back to configured default
 		redirectURI := q.Get("redirect_uri")
+		if redirectURI == "" {
+			redirectURI = a.RedirectURI
+		}
+
+		// Store the mapping between state and original redirect URI
+		stateRedirectMu.Lock()
+		stateRedirectMap[state] = redirectURI
+		stateRedirectMu.Unlock()
+
 		scopes := q.Get("scope")
 		if scopes == "" {
 			scopes = "openid email profile" // default Google
 		}
-		authURL, err := provider.GetAuthorizeURL(clientIDParam, state, redirectURI, scopes)
+		// Use our server's callback endpoint for OAuth flow
+		authURL, err := provider.GetAuthorizeURL(clientIDParam, state, a.RedirectURI, scopes)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -167,9 +187,64 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 			}
 			return
 		}
+
+		glog.V(2).Infof("redirect to Authorize URL: %s", authURL)
+
 		http.Redirect(w, r, authURL, http.StatusFound)
 	}))).
 		Methods("GET")
+
+	// Add callback endpoint to handle OAuth redirects
+	router.Handle("/callback", corsMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		glog.V(2).Infof("callback started")
+
+		q := r.URL.Query()
+		state := q.Get("state")
+		code := q.Get("code")
+		errorParam := q.Get("error")
+
+		// Retrieve the original redirect URI for this state
+		stateRedirectMu.RLock()
+		originalRedirectURI, exists := stateRedirectMap[state]
+		stateRedirectMu.RUnlock()
+
+		if !exists {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "<html><body><h1>OAuth Error</h1><p>Invalid or expired state parameter</p></body></html>")
+			return
+		}
+
+		// Clean up the state mapping
+		stateRedirectMu.Lock()
+		delete(stateRedirectMap, state)
+		stateRedirectMu.Unlock()
+
+		// Build the redirect URL with the authorization response
+		redirectURL, err := url.Parse(originalRedirectURI)
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "<html><body><h1>OAuth Error</h1><p>Invalid redirect URI</p></body></html>")
+			return
+		}
+
+		// Add query parameters to the redirect URL
+		values := redirectURL.Query()
+		if errorParam != "" {
+			values.Set("error", errorParam)
+		} else if code != "" && state != "" {
+			values.Set("code", code)
+			values.Set("state", state)
+		} else {
+			values.Set("error", "invalid_request")
+			values.Set("error_description", "Missing code or state parameter")
+		}
+		redirectURL.RawQuery = values.Encode()
+
+		glog.V(2).Infof("redirecting to original callback URL: %s", redirectURL.String())
+		http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+	}))).Methods("GET")
 
 	router.Handle("/token", corsMiddleware("Authorization", "Content-Type")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
@@ -207,7 +282,19 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 			return
 		}
 
-		token, err := provider.ExchangeToken(clientIDParam, a.ClientSecret, code, redirectURI)
+		// Allow localhost redirects on any port for development
+		parsedURI, err := url.Parse(redirectURI)
+		if err != nil || parsedURI.Hostname() != "localhost" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			if err := json.NewEncoder(w).Encode(map[string]string{"error": "invalid redirect_uri - must be localhost"}); err != nil {
+				glog.Errorf("Failed to encode error response: %v", err)
+			}
+			return
+		}
+
+		// Use the server's redirect URI for token exchange (must match what was used in authorization)
+		token, err := provider.ExchangeToken(clientIDParam, a.ClientSecret, code, a.RedirectURI)
 		if err != nil {
 			glog.Errorf("Token exchange failed: %v", err)
 			w.Header().Set("Content-Type", "application/json")
