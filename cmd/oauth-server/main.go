@@ -9,13 +9,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
 	"time"
 
 	libsentry "github.com/bborbe/sentry"
@@ -42,15 +42,9 @@ type application struct {
 	RedirectURI  string `required:"false" arg:"redirect-uri"    env:"REDIRECT_URI"    usage:"Fixed OAuth redirect URI" default:"http://localhost:8080/callback"`
 }
 
-// stateRedirectMap stores the mapping between OAuth state parameter and original redirect URI
-var (
-	stateRedirectMap = make(map[string]string)
-	stateRedirectMu  sync.RWMutex
-)
-
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
 
-	// Initialize provider (Google by default, GitHub optional)
+	// Initialize provider
 	provider := &GoogleProvider{}
 	glog.Info("Using Google OAuth provider")
 
@@ -168,17 +162,31 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 			redirectURI = a.RedirectURI
 		}
 
-		// Store the mapping between state and original redirect URI
-		stateRedirectMu.Lock()
-		stateRedirectMap[state] = redirectURI
-		stateRedirectMu.Unlock()
+		// Create OAuth state with custom parameters
+		oauthState := &OAuthState{
+			OriginalState: state,
+			RedirectURI:   redirectURI,
+			Theme:         q.Get("theme"),       // Custom parameter example
+			TrackingID:    q.Get("tracking_id"), // Custom parameter example
+		}
+
+		// Encode state for OAuth flow
+		encodedState, err := encodeState(oauthState)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			if encErr := json.NewEncoder(w).Encode(map[string]string{"error": "failed to encode state"}); encErr != nil {
+				glog.Errorf("Failed to encode error response: %v", encErr)
+			}
+			return
+		}
 
 		scopes := q.Get("scope")
 		if scopes == "" {
 			scopes = "openid email profile" // default Google
 		}
-		// Use our server's callback endpoint for OAuth flow
-		authURL, err := provider.GetAuthorizeURL(clientIDParam, state, a.RedirectURI, scopes)
+		// Use our server's callback endpoint for OAuth flow with encoded state
+		authURL, err := provider.GetAuthorizeURL(clientIDParam, encodedState, a.RedirectURI, scopes)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -199,26 +207,29 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		glog.V(2).Infof("callback started")
 
 		q := r.URL.Query()
-		state := q.Get("state")
+		encodedState := q.Get("state")
 		code := q.Get("code")
 		errorParam := q.Get("error")
 
-		// Retrieve the original redirect URI for this state
-		stateRedirectMu.RLock()
-		originalRedirectURI, exists := stateRedirectMap[state]
-		stateRedirectMu.RUnlock()
-
-		if !exists {
+		// Decode the OAuth state
+		oauthState, err := decodeState(encodedState)
+		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "<html><body><h1>OAuth Error</h1><p>Invalid or expired state parameter</p></body></html>")
+			fmt.Fprintf(w, "<html><body><h1>OAuth Error</h1><p>Invalid state parameter</p></body></html>")
 			return
 		}
 
-		// Clean up the state mapping
-		stateRedirectMu.Lock()
-		delete(stateRedirectMap, state)
-		stateRedirectMu.Unlock()
+		originalRedirectURI := oauthState.RedirectURI
+		originalState := oauthState.OriginalState
+
+		// Log custom parameters (optional)
+		if oauthState.Theme != "" {
+			glog.V(2).Infof("OAuth callback with theme: %s", oauthState.Theme)
+		}
+		if oauthState.TrackingID != "" {
+			glog.V(2).Infof("OAuth callback with tracking_id: %s", oauthState.TrackingID)
+		}
 
 		// Build the redirect URL with the authorization response
 		redirectURL, err := url.Parse(originalRedirectURI)
@@ -233,9 +244,17 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		values := redirectURL.Query()
 		if errorParam != "" {
 			values.Set("error", errorParam)
-		} else if code != "" && state != "" {
+		} else if code != "" && originalState != "" {
 			values.Set("code", code)
-			values.Set("state", state)
+			values.Set("state", originalState) // Use original state, not encoded
+
+			// Add custom parameters back to redirect if needed
+			if oauthState.Theme != "" {
+				values.Set("theme", oauthState.Theme)
+			}
+			if oauthState.TrackingID != "" {
+				values.Set("tracking_id", oauthState.TrackingID)
+			}
 		} else {
 			values.Set("error", "invalid_request")
 			values.Set("error_description", "Missing code or state parameter")
@@ -384,6 +403,35 @@ type Token struct {
 	ExpiresIn    int64     `json:"expires_in,omitempty"`    // Duration in seconds
 	Scope        string    `json:"scope,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+}
+
+// OAuthState represents the data encoded in the OAuth state parameter
+type OAuthState struct {
+	OriginalState string `json:"original_state"`
+	RedirectURI   string `json:"redirect_uri"`
+	// Add any custom fields here
+	Theme      string `json:"theme,omitempty"`
+	TrackingID string `json:"tracking_id,omitempty"`
+}
+
+// encodeState encodes OAuthState to base64 JSON string
+func encodeState(state *OAuthState) (string, error) {
+	jsonBytes, err := json.Marshal(state)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(jsonBytes), nil
+}
+
+// decodeState decodes base64 JSON string to OAuthState
+func decodeState(encodedState string) (*OAuthState, error) {
+	jsonBytes, err := base64.URLEncoding.DecodeString(encodedState)
+	if err != nil {
+		return nil, err
+	}
+	var state OAuthState
+	err = json.Unmarshal(jsonBytes, &state)
+	return &state, err
 }
 
 // OAuthProvider defines the methods for any OAuth provider.
