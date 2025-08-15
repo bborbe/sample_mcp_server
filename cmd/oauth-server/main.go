@@ -9,7 +9,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +19,7 @@ import (
 
 	libsentry "github.com/bborbe/sentry"
 	"github.com/bborbe/service"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -40,6 +40,7 @@ type application struct {
 	ClientID     string `required:"true"  arg:"oauth-client-id" env:"OAUTH_CLIENT_ID" usage:"OAuth 2.0 Client ID"`
 	ClientSecret string `required:"true"  arg:"oauth-secret"    env:"OAUTH_SECRET"    usage:"OAuth 2.0 Client Secret" display:"length"`
 	RedirectURI  string `required:"false" arg:"redirect-uri"    env:"REDIRECT_URI"    usage:"Fixed OAuth redirect URI" default:"http://localhost:8080/callback"`
+	JWTSecret    string `required:"true"  arg:"jwt-secret"      env:"JWT_SECRET"      usage:"JWT secret for state signing" display:"length"`
 }
 
 func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) error {
@@ -163,15 +164,15 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		}
 
 		// Create OAuth state with custom parameters
-		oauthState := &OAuthState{
+		oauthState := &OAuthStateClaims{
 			OriginalState: state,
 			RedirectURI:   redirectURI,
 			Theme:         q.Get("theme"),       // Custom parameter example
 			TrackingID:    q.Get("tracking_id"), // Custom parameter example
 		}
 
-		// Encode state for OAuth flow
-		encodedState, err := encodeState(oauthState)
+		// Encode state for OAuth flow using JWT
+		encodedState, err := encodeState(oauthState, a.JWTSecret)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -211,8 +212,8 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		code := q.Get("code")
 		errorParam := q.Get("error")
 
-		// Decode the OAuth state
-		oauthState, err := decodeState(encodedState)
+		// Decode the OAuth state JWT
+		oauthState, err := decodeState(encodedState, a.JWTSecret)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusBadRequest)
@@ -405,33 +406,44 @@ type Token struct {
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
 }
 
-// OAuthState represents the data encoded in the OAuth state parameter
-type OAuthState struct {
+// OAuthStateClaims represents the JWT claims for OAuth state
+type OAuthStateClaims struct {
 	OriginalState string `json:"original_state"`
 	RedirectURI   string `json:"redirect_uri"`
-	// Add any custom fields here
-	Theme      string `json:"theme,omitempty"`
-	TrackingID string `json:"tracking_id,omitempty"`
+	Theme         string `json:"theme,omitempty"`
+	TrackingID    string `json:"tracking_id,omitempty"`
+	jwt.RegisteredClaims
 }
 
-// encodeState encodes OAuthState to base64 JSON string
-func encodeState(state *OAuthState) (string, error) {
-	jsonBytes, err := json.Marshal(state)
-	if err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(jsonBytes), nil
+// encodeState encodes OAuthState claims to JWT string
+func encodeState(state *OAuthStateClaims, secret string) (string, error) {
+	// Set expiration time (5 minutes from now)
+	state.ExpiresAt = jwt.NewNumericDate(time.Now().Add(5 * time.Minute))
+	state.IssuedAt = jwt.NewNumericDate(time.Now())
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, state)
+	return token.SignedString([]byte(secret))
 }
 
-// decodeState decodes base64 JSON string to OAuthState
-func decodeState(encodedState string) (*OAuthState, error) {
-	jsonBytes, err := base64.URLEncoding.DecodeString(encodedState)
+// decodeState decodes JWT string to OAuthState claims
+func decodeState(tokenString, secret string) (*OAuthStateClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &OAuthStateClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secret), nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
-	var state OAuthState
-	err = json.Unmarshal(jsonBytes, &state)
-	return &state, err
+
+	if claims, ok := token.Claims.(*OAuthStateClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, fmt.Errorf("invalid token")
 }
 
 // OAuthProvider defines the methods for any OAuth provider.
