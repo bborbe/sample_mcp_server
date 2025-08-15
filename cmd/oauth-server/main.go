@@ -163,12 +163,10 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 			redirectURI = a.RedirectURI
 		}
 
-		// Create OAuth state with custom parameters
+		// Create OAuth state
 		oauthState := &OAuthStateClaims{
 			OriginalState: state,
 			RedirectURI:   redirectURI,
-			Theme:         q.Get("theme"),       // Custom parameter example
-			TrackingID:    q.Get("tracking_id"), // Custom parameter example
 		}
 
 		// Encode state for OAuth flow using JWT
@@ -224,14 +222,6 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		originalRedirectURI := oauthState.RedirectURI
 		originalState := oauthState.OriginalState
 
-		// Log custom parameters (optional)
-		if oauthState.Theme != "" {
-			glog.V(2).Infof("OAuth callback with theme: %s", oauthState.Theme)
-		}
-		if oauthState.TrackingID != "" {
-			glog.V(2).Infof("OAuth callback with tracking_id: %s", oauthState.TrackingID)
-		}
-
 		// Build the redirect URL with the authorization response
 		redirectURL, err := url.Parse(originalRedirectURI)
 		if err != nil {
@@ -249,13 +239,6 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 			values.Set("code", code)
 			values.Set("state", originalState) // Use original state, not encoded
 
-			// Add custom parameters back to redirect if needed
-			if oauthState.Theme != "" {
-				values.Set("theme", oauthState.Theme)
-			}
-			if oauthState.TrackingID != "" {
-				values.Set("tracking_id", oauthState.TrackingID)
-			}
 		} else {
 			values.Set("error", "invalid_request")
 			values.Set("error_description", "Missing code or state parameter")
@@ -410,8 +393,6 @@ type Token struct {
 type OAuthStateClaims struct {
 	OriginalState string `json:"original_state"`
 	RedirectURI   string `json:"redirect_uri"`
-	Theme         string `json:"theme,omitempty"`
-	TrackingID    string `json:"tracking_id,omitempty"`
 	jwt.RegisteredClaims
 }
 

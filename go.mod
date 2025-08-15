@@ -9,6 +9,7 @@ require (
 	github.com/bborbe/http v1.14.1
 	github.com/bborbe/sentry v1.8.2
 	github.com/bborbe/service v1.6.2
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang/glog v1.2.5
 	github.com/google/addlicense v1.2.0
 	github.com/gorilla/mux v1.8.1
