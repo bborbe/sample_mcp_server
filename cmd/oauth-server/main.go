@@ -108,8 +108,7 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		if err := json.NewEncoder(w).Encode(metadata); err != nil {
 			glog.Errorf("Failed to encode metadata: %v", err)
 		}
-	}))).
-		Methods("GET")
+	}))).Methods("GET")
 
 	router.Handle("/.well-known/oauth-authorization-server", corsMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		metadata := transport.AuthServerMetadata{
@@ -132,8 +131,7 @@ func (a *application) Run(ctx context.Context, sentryClient libsentry.Client) er
 		if err := json.NewEncoder(w).Encode(metadata); err != nil {
 			glog.Errorf("Failed to encode metadata: %v", err)
 		}
-	}))).
-		Methods("GET")
+	}))).Methods("GET")
 
 	router.Handle("/authorize", corsMiddleware("Authorization", "Content-Type")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		glog.V(2).Infof("authorize started %v", r.URL.Query())
