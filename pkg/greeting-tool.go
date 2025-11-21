@@ -9,21 +9,27 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/mark3labs/mcp-go/server"
 )
 
 func NewGreetingTool() server.ServerTool {
 
 	type GreetingArgs struct {
-		Name      string   `json:"name"`
-		Age       int      `json:"age"`
-		IsVIP     bool     `json:"is_vip"`
-		Languages []string `json:"languages"`
+		Name      string   `json:"name,omitempty"`
+		Age       int      `json:"age,omitempty"`
+		IsVIP     bool     `json:"is_vip,omitempty"`
+		Languages []string `json:"languages,omitempty"`
 		Metadata  struct {
-			Location string `json:"location"`
-			Timezone string `json:"timezone"`
-		} `json:"metadata"`
+			Location string `json:"location,omitempty"`
+			Timezone string `json:"timezone,omitempty"`
+		} `json:"metadata,omitempty"`
 	}
+
+	//type GreetingResult struct {
+	//	GreetingArgs
+	//	Message string `json:"message,omitempty"`
+	//}
 
 	tool := mcp.NewTool("greeting",
 		mcp.WithDescription("Generate a personalized greeting"),
@@ -93,6 +99,12 @@ func NewGreetingTool() server.ServerTool {
 				greeting += fmt.Sprintf(" Your timezone is %s.", args.Metadata.Timezone)
 			}
 		}
+
+		//result := GreetingResult{
+		//	GreetingArgs: args,
+		//	Message:      greeting,
+		//}
+		//return mcp.NewToolResultStructuredOnly(result), nil
 
 		return mcp.NewToolResultText(greeting), nil
 	})
