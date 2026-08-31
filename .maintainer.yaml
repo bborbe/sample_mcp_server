@@ -1,0 +1,9 @@
+# Deliberately excluded from the automated Go/deps sweep.
+#
+# `false` here is an explicit decision, not an accident. Absent config used to
+# be indistinguishable from a repo nobody had decided about, which is how five
+# maintained repos silently sat on an outdated Go version for days. With this
+# file present, silence is no longer a valid state: a missing goUpdate key now
+# means "nobody has decided" and gets surfaced for review.
+goUpdate:
+  autoUpdate: false
